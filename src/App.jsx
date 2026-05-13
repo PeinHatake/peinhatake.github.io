@@ -47,6 +47,17 @@ function readableError(error) {
   return error.message || String(error);
 }
 
+function formatDefaultArtworkTitle() {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const year = now.getFullYear();
+
+  return `${hours}:${minutes} ${day}/${month}/${year}`;
+}
+
 async function uploadImage(file, folder = "projects") {
   if (!file) return null;
   const ext = file.name.split(".").pop() || "jpg";
@@ -88,7 +99,6 @@ function useSession() {
 
     const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
-      window.dispatchEvent(new Event("artpinner-auth-changed"));
     });
 
     return () => data.subscription.unsubscribe();
@@ -103,6 +113,7 @@ export default function App() {
   const [projects, setProjects] = useState(fallbackProjects);
   const [activeTag, setActiveTag] = useState("All");
   const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState(null);
 
   async function loadData() {
     setLoading(true);
@@ -134,17 +145,41 @@ export default function App() {
     }
   }
 
+  async function handleSignOut() {
+    if (!isSupabaseConfigured) {
+      go("/edit");
+      return;
+    }
+
+    await supabase.auth.signOut();
+    setSession(null);
+    await loadData();
+    go("/");
+  }
+
   useEffect(() => {
     loadData();
 
     const onHashChange = () => setRoute(getHashRoute());
-    const onAuthChanged = () => loadData();
-
     window.addEventListener("hashchange", onHashChange);
-    window.addEventListener("artpinner-auth-changed", onAuthChanged);
+
+    let authSubscription = null;
+
+    if (isSupabaseConfigured) {
+      supabase.auth.getSession().then(({ data }) => {
+        setSession(data.session);
+      });
+
+      const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
+        setSession(newSession);
+      });
+
+      authSubscription = data.subscription;
+    }
+
     return () => {
       window.removeEventListener("hashchange", onHashChange);
-      window.removeEventListener("artpinner-auth-changed", onAuthChanged);
+      authSubscription?.unsubscribe();
     };
   }, []);
 
@@ -167,7 +202,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <Header route={route} profile={profile} onRefresh={loadData} />
+      <Header route={route} profile={profile} session={session} onSignOut={handleSignOut} />
 
       {loading ? (
         <main className="page narrow">
@@ -177,7 +212,7 @@ export default function App() {
           </div>
         </main>
       ) : projectDetailId ? (
-        <ArtworkDetailPage project={selectedProject} />
+        <ArtworkDetailPage project={selectedProject} profile={profile} />
       ) : route === "/about" ? (
         <AboutPage profile={profile} />
       ) : route === "/user" ? (
@@ -201,19 +236,22 @@ export default function App() {
   );
 }
 
-function Header({ route, profile, onRefresh }) {
+function Header({ route, profile, session, onSignOut }) {
   return (
     <header className="site-header">
-      <button className="brand" onClick={() => go("/")}>
-        <img src={profile.avatar_url} alt="Avatar" />
+      <button className={session ? "brand" : "brand brand-guest"} onClick={() => go("/")}>
+        {session ? <img src={profile.avatar_url} alt="Avatar" /> : null}
         <span>
           <strong>ArtPinner</strong>
-          <small>{profile.name}</small>
+          <small>{session ? profile.name : "Được tạo bởi Đăng Hà"}</small>
         </span>
       </button>
 
       <nav>
-        <button className={route === "/" ? "active" : ""} onClick={() => go("/")}>
+        <button
+          className={route === "/" || route === "/user" ? "active" : ""}
+          onClick={() => go("/")}
+        >
           Gallery
         </button>
         <button
@@ -221,12 +259,6 @@ function Header({ route, profile, onRefresh }) {
           onClick={() => go("/about")}
         >
           About
-        </button>
-        <button
-          className={route === "/user" ? "active" : ""}
-          onClick={() => go("/user")}
-        >
-          Người dùng
         </button>
         <button
           className={route === "/upload" ? "active" : ""}
@@ -240,9 +272,15 @@ function Header({ route, profile, onRefresh }) {
         >
           Chỉnh sửa
         </button>
-        <button className="ghost" onClick={onRefresh} title="Reload data">
-          <RefreshCw size={16} />
-        </button>
+        {session ? (
+          <button className="logout-button" onClick={onSignOut} title="Đăng xuất">
+            <LogOut size={16} /> Đăng xuất
+          </button>
+        ) : (
+          <button className="logout-button" onClick={() => go("/edit")} title="Đăng nhập">
+            <Lock size={16} /> Đăng nhập
+          </button>
+        )}
       </nav>
     </header>
   );
@@ -285,9 +323,6 @@ function GalleryPage({ profile, projects, tags, activeTag, onTagChange }) {
             <button onClick={() => go("/upload")}>
               <ImagePlus size={16} /> Đăng ảnh mới
             </button>
-            <button className="secondary" onClick={() => go("/user")}>
-              <User size={16} /> Người dùng + Artwork
-            </button>
             <button className="secondary" onClick={() => go("/about")}>
               <User size={16} /> Thông tin cá nhân
             </button>
@@ -296,11 +331,11 @@ function GalleryPage({ profile, projects, tags, activeTag, onTagChange }) {
             </button>
           </div>
         </div>
-        <div className="hero-card">
+        <button className="hero-card hero-card-button" onClick={() => go("/user")}>
           <img src={profile.avatar_url} alt={profile.name} />
-          <strong>{profile.location || "Vietnam"}</strong>
+          <strong>{profile.name}</strong>
           <span>{projects.length} artworks</span>
-        </div>
+        </button>
       </section>
 
       <section className="gallery-tools">
@@ -391,7 +426,7 @@ function ProjectCard({ project }) {
   );
 }
 
-function ArtworkDetailPage({ project }) {
+function ArtworkDetailPage({ project, profile }) {
   if (!project) {
     return (
       <main className="page narrow">
@@ -422,6 +457,15 @@ function ArtworkDetailPage({ project }) {
         <aside className="artwork-info">
           <p className="eyebrow">Artwork</p>
           <h1>{project.title}</h1>
+
+          <button className="uploader-card" onClick={() => go("/user")}>
+            <img src={profile.avatar_url} alt={profile.name} />
+            <span>
+              <small>Người đăng</small>
+              <strong>{profile.name}</strong>
+            </span>
+          </button>
+
           <p className="bio">{project.description || "Chưa có mô tả cho ảnh này."}</p>
 
           <div className="mini-tags">
@@ -678,7 +722,7 @@ function LoginForm({ title = "Đăng nhập" }) {
       <h1>{mode === "login" ? title : "Đăng ký tài khoản"}</h1>
       <p>
         {mode === "login"
-          ? "Đăng nhập bằng email/password đã tạo trong Supabase Authentication."
+          ? "Đăng nhập bằng email/password đã tạo"
           : "Tạo tài khoản mới để dùng trang Đăng ảnh và Chỉnh sửa."}
       </p>
 
@@ -736,6 +780,7 @@ function ProfileEditor({ profile, onChanged }) {
     website: profile.socials?.website || ""
   });
   const [avatar, setAvatar] = useState(null);
+  const [avatarPreview, setAvatarPreview] = useState(profile.avatar_url || "");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -751,10 +796,27 @@ function ProfileEditor({ profile, onChanged }) {
       facebook: profile.socials?.facebook || "",
       website: profile.socials?.website || ""
     });
+    setAvatarPreview(profile.avatar_url || "");
   }, [profile]);
 
   function updateField(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
+
+    if (field === "avatar_url") {
+      setAvatarPreview(value);
+    }
+  }
+
+  function handleAvatarFile(file) {
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      alert("Vui lòng chọn file ảnh.");
+      return;
+    }
+
+    setAvatar(file);
+    setAvatarPreview(URL.createObjectURL(file));
   }
 
   async function save(event) {
@@ -787,6 +849,7 @@ function ProfileEditor({ profile, onChanged }) {
       if (error) throw error;
 
       setAvatar(null);
+      setAvatarPreview(avatarUrl);
       await onChanged();
       alert("Đã lưu thông tin cá nhân.");
     } catch (error) {
@@ -889,14 +952,45 @@ function ProfileEditor({ profile, onChanged }) {
         />
       </label>
 
-      <label>
-        Upload avatar mới
-        <input
-          type="file"
-          accept="image/*"
-          onChange={(event) => setAvatar(event.target.files?.[0] || null)}
-        />
-      </label>
+      <div className="avatar-upload-field">
+        <span>Upload avatar mới</span>
+
+        <label
+          className="avatar-drop-zone"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            handleAvatarFile(event.dataTransfer.files?.[0]);
+          }}
+        >
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => handleAvatarFile(event.target.files?.[0])}
+          />
+
+          {avatarPreview ? (
+            <img src={avatarPreview} alt="Avatar preview" />
+          ) : (
+            <div className="avatar-placeholder">
+              <Upload size={32} />
+              <strong>Kéo ảnh vào đây</strong>
+              <small>hoặc bấm để chọn ảnh</small>
+            </div>
+          )}
+
+          <div className="avatar-upload-overlay">
+            <Upload size={18} />
+            <span>Chọn / thay avatar</span>
+          </div>
+        </label>
+
+        {avatar ? (
+          <small className="file-picked">Đã chọn: {avatar.name}</small>
+        ) : (
+          <small className="file-picked">Chưa chọn file mới. Đang dùng ảnh hiện tại.</small>
+        )}
+      </div>
 
       <button type="submit" disabled={saving}>
         <Save size={16} /> {saving ? "Đang lưu..." : "Lưu thông tin"}
@@ -913,10 +1007,23 @@ function ProjectEditor({ onChanged }) {
     external_url: ""
   });
   const [file, setFile] = useState(null);
+  const [filePreview, setFilePreview] = useState("");
   const [saving, setSaving] = useState(false);
 
   function updateField(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function handleArtworkFile(file) {
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      alert("Vui lòng chọn file ảnh.");
+      return;
+    }
+
+    setFile(file);
+    setFilePreview(URL.createObjectURL(file));
   }
 
   async function save(event) {
@@ -930,7 +1037,7 @@ function ProjectEditor({ onChanged }) {
     try {
       const imageUrl = await uploadImage(file, "projects");
       const payload = {
-        title: form.title,
+        title: form.title.trim() || formatDefaultArtworkTitle(),
         description: form.description,
         image_url: imageUrl,
         tags: normalizeTags(form.tags),
@@ -942,6 +1049,7 @@ function ProjectEditor({ onChanged }) {
 
       setForm({ title: "", description: "", tags: "", external_url: "" });
       setFile(null);
+      setFilePreview("");
       event.target.reset();
       await onChanged();
       alert("Đã đăng ảnh.");
@@ -963,8 +1071,8 @@ function ProjectEditor({ onChanged }) {
         Tiêu đề
         <input
           value={form.title}
+          placeholder="Bỏ trống sẽ tự đặt: giờ:phút ngày/tháng/năm"
           onChange={(event) => updateField("title", event.target.value)}
-          required
         />
       </label>
 
@@ -995,15 +1103,45 @@ function ProjectEditor({ onChanged }) {
         </label>
       </div>
 
-      <label>
-        Ảnh artwork
-        <input
-          type="file"
-          accept="image/*"
-          onChange={(event) => setFile(event.target.files?.[0] || null)}
-          required
-        />
-      </label>
+      <div className="artwork-upload-field">
+        <span>Ảnh artwork</span>
+
+        <label
+          className="artwork-drop-zone"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            handleArtworkFile(event.dataTransfer.files?.[0]);
+          }}
+        >
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => handleArtworkFile(event.target.files?.[0])}
+          />
+
+          {filePreview ? (
+            <img src={filePreview} alt="Artwork preview" />
+          ) : (
+            <div className="artwork-placeholder">
+              <ImagePlus size={38} />
+              <strong>Kéo ảnh vào đây</strong>
+              <small>hoặc bấm để chọn ảnh artwork</small>
+            </div>
+          )}
+
+          <div className="artwork-upload-overlay">
+            <Upload size={18} />
+            <span>Chọn / thay ảnh</span>
+          </div>
+        </label>
+
+        {file ? (
+          <small className="file-picked">Đã chọn: {file.name}</small>
+        ) : (
+          <small className="file-picked">Chưa chọn ảnh artwork.</small>
+        )}
+      </div>
 
       <button type="submit" disabled={saving}>
         <Upload size={16} /> {saving ? "Đang upload..." : "Đăng ảnh"}
