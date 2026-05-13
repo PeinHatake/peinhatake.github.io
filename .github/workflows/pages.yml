@@ -29,19 +29,20 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
-      - name: Clean npm cache
-        run: npm cache clean --force
+      - name: Clean install state
+        run: |
+          rm -rf node_modules package-lock.json
+          npm cache clean --force
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund --legacy-peer-deps
-
-      - name: Check Vite
-        run: npx vite --version
+        run: |
+          npm install --no-audit --no-fund --legacy-peer-deps
+          test -d node_modules/vite
 
       - name: Build static site
-        run: npx vite build
+        run: npm run build
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
